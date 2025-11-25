@@ -36,130 +36,27 @@ async function fetchTikTokStatus(accessToken: string, publishId: string) {
 export async function GET(request: NextRequest) {
   try {
     const session = await requireAuth();
-    if (!session.userId) {
-      return NextResponse.json(
-        { error: "User ID not found in session" },
-        { status: 401 },
-      );
-    }
-
-    const searchParams = request.nextUrl.searchParams;
-    const q = searchParams.get("q") || "";
-    const page = Math.max(1, parseInt(searchParams.get("page") || "1"));
+    const { searchParams } = new URL(request.url);
+    const page = Math.max(1, parseInt(searchParams.get("page") || "1", 10));
     const pageSize = Math.min(
       100,
-      Math.max(1, parseInt(searchParams.get("pageSize") || "20")),
+      Math.max(1, parseInt(searchParams.get("pageSize") || "10", 10)),
     );
-    const sort = searchParams.get("sort") || "createdAt";
-    const include = searchParams.get("include") || "";
-    const includeClips = include
-      .split(",")
-      .map((s) => s.trim())
-      .includes("clips");
+    const skip = (page - 1) * pageSize;
 
-    const where: any = { userId: session.userId };
-    if (q) {
-      where.OR = [
-        { title: { contains: q, mode: "insensitive" as const } },
-        { sourceUrl: { contains: q, mode: "insensitive" as const } },
-      ];
-    }
-
-    const orderBy =
-      sort === "createdAt"
-        ? { createdAt: "desc" as const }
-        : { updatedAt: "desc" as const };
-
-    const [videos, total] = await Promise.all([
+    const [total, videos] = await Promise.all([
+      prisma.video.count({ where: { userId: session.userId } }),
       prisma.video.findMany({
-        where,
-        orderBy,
-        skip: (page - 1) * pageSize,
+        where: { userId: session.userId },
+        orderBy: { createdAt: "desc" },
+        skip,
         take: pageSize,
-        include: includeClips
-          ? {
-              clips: {
-                orderBy: { createdAt: "desc" },
-                select: {
-                  id: true,
-                  startSec: true,
-                  endSec: true,
-                  durationSec: true,
-                  scoreOverall: true,
-                  s3VideoKey: true,
-                  s3ThumbKey: true,
-                  tiktokStatus: true,
-                  tiktokPublishId: true,
-                  createdAt: true,
-                },
-              },
-              _count: { select: { clips: true } },
-            }
-          : {
-              _count: { select: { clips: true } },
-            },
+        include: { _count: { select: { clips: true } } },
       }),
-      prisma.video.count({ where }),
     ]);
 
-    let accessToken: string | null = null;
-
-    if (includeClips) {
-      const conn = await prisma.tikTokConnection.findFirst({
-        where: { userId: session.userId },
-        orderBy: { updatedAt: "desc" },
-      });
-
-      if (conn) {
-        const ensured = await ensureAccessToken({
-          accessToken: decrypt(conn.accessToken),
-          refreshToken: decrypt(conn.refreshToken),
-          expiresAt: conn.expiresAt,
-        });
-        accessToken = ensured.accessToken;
-      }
-    }
-
-    let shaped: any;
-
-    if (includeClips) {
-      shaped = [];
-      for (const v of videos) {
-        const clips = [];
-        for (const c of v.clips) {
-          let tiktokLiveStatus: any = null;
-          if (accessToken && c.tiktokPublishId) {
-            const st = await fetchTikTokStatus(accessToken, c.tiktokPublishId);
-            tiktokLiveStatus = st;
-          }
-          clips.push({
-            ...c,
-            videoUrl: publicUrlForKey(c.s3VideoKey),
-            thumbUrl: publicUrlForKey(c.s3ThumbKey),
-            tiktokLiveStatus,
-          });
-        }
-        shaped.push({ ...v, clips });
-      }
-    } else {
-      shaped = videos;
-    }
-
-    return NextResponse.json({
-      videos: shaped,
-      total,
-      page,
-      pageSize,
-      totalPages: Math.ceil(total / pageSize),
-    });
-  } catch (error: any) {
-    console.error("Error fetching videos:", error);
-    if (error.message === "Authentication required") {
-      return NextResponse.json(
-        { error: "Authentication required" },
-        { status: 401 },
-      );
-    }
+    return NextResponse.json({ total, page, pageSize, videos });
+  } catch {
     return NextResponse.json(
       { error: "Failed to fetch videos" },
       { status: 500 },

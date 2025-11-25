@@ -1,8 +1,35 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import {
+  AppBar,
+  Toolbar,
+  Typography,
+  Box,
+  Container,
+  Stack,
+  Button,
+  Chip,
+  Paper,
+  TextField,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
+  Checkbox,
+  IconButton,
+  Menu,
+  MenuItem,
+  TablePagination,
+  Divider,
+  Alert,
+  CircularProgress,
+} from "@mui/material";
+import MoreVertIcon from "@mui/icons-material/MoreVert";
 
 interface Video {
   id: string;
@@ -11,87 +38,87 @@ interface Video {
   status: string;
   durationSec: number;
   createdAt: string;
-  _count: {
-    clips: number;
-  };
+  _count: { clips: number };
 }
 
 export default function Home() {
+  const router = useRouter();
   const [url, setUrl] = useState("");
   const [loading, setLoading] = useState(false);
   const [videos, setVideos] = useState<Video[]>([]);
   const [error, setError] = useState("");
   const [authStatus, setAuthStatus] = useState<any>(null);
   const [connections, setConnections] = useState<any>(null);
-  const router = useRouter();
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [deletingBatch, setDeletingBatch] = useState(false);
+  const [page, setPage] = useState(0);
+  const [rowsPerPage, setRowsPerPage] = useState(10);
+  const [total, setTotal] = useState(0);
+  const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
 
   useEffect(() => {
     checkAuth();
   }, []);
+
+  useEffect(() => {
+    if (authStatus && connections) {
+      fetchVideos(page + 1, rowsPerPage);
+    }
+  }, [page, rowsPerPage, authStatus, connections]);
 
   async function checkAuth() {
     try {
       const res = await fetch("/api/auth/status");
       const data = await res.json();
       setAuthStatus(data);
-
       if (!data.isAuthenticated) {
         router.push("/login");
         return;
       }
-
       const connectionsRes = await fetch("/api/me/connections");
       const connectionsData = await connectionsRes.json();
       setConnections(connectionsData);
-
-      if (!connectionsData.hasCookies) {
-        router.push("/setup-cookies");
-        return;
-      }
-
-      fetchVideos();
-    } catch (err) {
-      console.error("Failed to check auth:", err);
+      fetchVideos(1, rowsPerPage);
+    } catch {
       router.push("/login");
     }
   }
 
-  async function fetchVideos() {
+  async function fetchVideos(p = 1, ps = 10) {
     try {
-      const response = await fetch("/api/videos");
+      const response = await fetch(`/api/videos?page=${p}&pageSize=${ps}`);
       const data = await response.json();
-
       if (response.ok) {
         setVideos(data.videos);
+        setTotal(data.total);
+        setSelectedIds([]);
+        setOpenMenuId(null);
+        setMenuAnchor(null);
       }
-    } catch (err) {
-      console.error("Error fetching videos:", err);
-    }
+    } catch {}
   }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setLoading(true);
     setError("");
-
     try {
       const response = await fetch("/api/submit", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url }),
       });
-
       const data = await response.json();
-
       if (response.ok) {
         setUrl("");
-        fetchVideos();
+        setPage(0);
+        fetchVideos(1, rowsPerPage);
       } else {
         setError(data.error || "Failed to submit video");
       }
-    } catch (err) {
+    } catch {
       setError("Failed to submit video");
     } finally {
       setLoading(false);
@@ -102,209 +129,386 @@ export default function Home() {
     try {
       await fetch("/api/auth/logout", { method: "POST" });
       router.push("/login");
-    } catch (err) {
-      console.error("Failed to logout:", err);
-    }
+    } catch {}
   }
 
   async function handleCancel(videoId: string) {
-    if (!confirm("Are you sure you want to cancel this video processing?")) {
-      return;
-    }
-
-    try {
-      const response = await fetch(`/api/videos/${videoId}/cancel`, {
-        method: "POST",
-      });
-
-      if (response.ok) {
-        fetchVideos();
-      } else {
-        const data = await response.json();
-        alert(data.error || "Failed to cancel video");
+    const ok = window.confirm("Cancel this video processing?");
+    if (ok) {
+      try {
+        const response = await fetch(`/api/videos/${videoId}/cancel`, {
+          method: "POST",
+        });
+        if (response.ok) {
+          fetchVideos(page + 1, rowsPerPage);
+        } else {
+          const data = await response.json();
+          alert(data.error || "Failed to cancel video");
+        }
+      } catch {
+        alert("Failed to cancel video");
       }
-    } catch (err) {
-      console.error("Failed to cancel video:", err);
-      alert("Failed to cancel video");
     }
   }
 
-  if (!authStatus || !connections) {
+  async function handleDelete(videoId: string) {
+    const ok = window.confirm("Delete this video and all associated clips?");
+    if (ok) {
+      setDeletingId(videoId);
+      setError("");
+      try {
+        const res = await fetch(`/api/videos/${videoId}`, { method: "DELETE" });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok) {
+          const nextTotal = Math.max(0, total - 1);
+          const maxPage = Math.max(0, Math.ceil(nextTotal / rowsPerPage) - 1);
+          const nextPage = Math.min(page, maxPage);
+          setPage(nextPage);
+          fetchVideos(nextPage + 1, rowsPerPage);
+        } else {
+          setError(data.error || "Failed to delete video");
+        }
+      } catch {
+        setError("Failed to delete video");
+      } finally {
+        setDeletingId(null);
+        setOpenMenuId(null);
+        setMenuAnchor(null);
+      }
+    }
+  }
+
+  function toggleOne(id: string) {
+    setSelectedIds((prev) => {
+      if (prev.includes(id)) {
+        return prev.filter((x) => x !== id);
+      }
+      return [...prev, id];
+    });
+  }
+
+  function toggleAll() {
+    if (selectedIds.length === videos.length) {
+      setSelectedIds([]);
+      return;
+    }
+    setSelectedIds(videos.map((v) => v.id));
+  }
+
+  async function handleBatchDelete() {
+    if (selectedIds.length === 0) {
+      return;
+    }
+    const ok = window.confirm(
+      `Delete ${selectedIds.length} video(s) and all associated clips?`,
+    );
+    if (ok) {
+      setDeletingBatch(true);
+      setError("");
+      try {
+        const res = await fetch(`/api/videos/batch-delete`, {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ids: selectedIds }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok) {
+          const newTotal = Math.max(0, total - selectedIds.length);
+          const maxPage = Math.max(0, Math.ceil(newTotal / rowsPerPage) - 1);
+          const nextPage = Math.min(page, maxPage);
+          setPage(nextPage);
+          fetchVideos(nextPage + 1, rowsPerPage);
+        } else {
+          setError(data.error || "Failed to delete selected videos");
+        }
+      } catch {
+        setError("Failed to delete selected videos");
+      } finally {
+        setDeletingBatch(false);
+        setOpenMenuId(null);
+        setMenuAnchor(null);
+      }
+    }
+  }
+
+  const pageCount = useMemo(
+    () => Math.max(1, Math.ceil(total / rowsPerPage)),
+    [total, rowsPerPage],
+  );
+  const loadingGate = !authStatus || !connections;
+
+  if (loadingGate) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="text-gray-400">Loading...</div>
-      </div>
+      <Box sx={{ minHeight: "100vh", display: "grid", placeItems: "center" }}>
+        <CircularProgress />
+      </Box>
     );
   }
 
   return (
-    <div className="min-h-screen p-8">
-      <div className="max-w-6xl mx-auto">
-        <div className="flex justify-between items-center mb-8">
-          <h1 className="text-4xl font-bold">YT Shortsmith</h1>
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2">
-              <div
-                className={`w-2 h-2 rounded-full ${connections.hasCookies ? "bg-green-500" : "bg-red-500"}`}
-              ></div>
-              <span className="text-sm text-gray-400">
-                {connections.hasCookies ? "YouTube Connected" : "No Cookies"}
-              </span>
-            </div>
-            <div className="flex items-center gap-2">
-              <div
-                className={`w-2 h-2 rounded-full ${connections.hasTikTok ? "bg-green-500" : "bg-red-500"}`}
-              ></div>
-              <span className="text-sm text-gray-400">
-                {connections.hasTikTok
+    <Box minHeight="100vh" display="flex" flexDirection="column">
+      <AppBar position="sticky">
+        <Toolbar>
+          <Typography variant="h5" sx={{ flexGrow: 1 }}>
+            YT Shortsmith
+          </Typography>
+          <Stack direction="row" spacing={1} alignItems="center">
+            <Chip
+              size="small"
+              color={connections.hasYouTube ? "success" : "error"}
+              label={
+                connections.hasYouTube ? "YouTube Connected" : "YouTube Disconnected"
+              }
+            />
+            <Chip
+              size="small"
+              color={connections.hasTikTok ? "success" : "error"}
+              label={
+                connections.hasTikTok
                   ? "TikTok Connected"
-                  : "TikTok Disconnected"}
-              </span>
-            </div>
-            <a
-              href="/api/tiktok/oauth/start"
-              className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm"
+                  : "TikTok Disconnected"
+              }
+            />
+            <Button
+              href="/upload-cookies"
+              color="inherit"
+              variant="outlined"
             >
+              Manage Cookies
+            </Button>
+            <Button href="/api/tiktok/oauth/start">
               {connections.hasTikTok ? "Reconnect TikTok" : "Connect TikTok"}
-            </a>
-            {connections.hasCookies && connections.cookiesLastUsedAt && (
-              <span className="text-xs text-gray-500">
-                Last used:{" "}
-                {new Date(connections.cookiesLastUsedAt).toLocaleDateString()}
-              </span>
-            )}
-            <Link
-              href="/setup-cookies"
-              className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm"
-            >
-              Update Cookies
-            </Link>
-            <button
-              onClick={handleLogout}
-              className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm"
-            >
+            </Button>
+            <Button onClick={handleLogout} color="inherit">
               Logout
-            </button>
-          </div>
-        </div>
+            </Button>
+          </Stack>
+        </Toolbar>
+      </AppBar>
 
+      <Container sx={{ py: 4, flex: 1 }}>
+        {!connections.hasYouTube && (
+          <Alert severity="warning" sx={{ mb: 3 }}>
+            YouTube not connected. Please contact administrator to connect YouTube OAuth.
+          </Alert>
+        )}
+        
         {!connections.hasCookies && (
-          <div className="mb-6 p-4 bg-yellow-900/50 border border-yellow-700 rounded-lg">
-            <p className="text-yellow-200 text-sm">
-              YouTube cookies not configured. Please{" "}
-              <Link href="/setup-cookies" className="underline">
-                upload your cookies
-              </Link>{" "}
-              to submit videos.
-            </p>
-          </div>
+          <Alert severity="warning" sx={{ mb: 3 }}>
+            YouTube cookies not uploaded. Video downloads may fail.{" "}
+            <Button
+              href="/upload-cookies"
+              size="small"
+              sx={{ ml: 1 }}
+            >
+              Upload Cookies
+            </Button>
+          </Alert>
+        )}
+        
+        {connections.hasCookies && connections.cookieAgeDays > 21 && (
+          <Alert severity="info" sx={{ mb: 3 }}>
+            YouTube cookies are {connections.cookieAgeDays} days old and may be expired.{" "}
+            <Button
+              href="/upload-cookies"
+              size="small"
+              sx={{ ml: 1 }}
+            >
+              Refresh Cookies
+            </Button>
+          </Alert>
         )}
 
-        <div className="bg-gray-800 p-6 rounded-lg mb-8">
-          <h2 className="text-xl font-semibold mb-4">Submit YouTube Video</h2>
-          <form onSubmit={handleSubmit} className="flex gap-4">
-            <input
-              type="text"
+        <Paper sx={{ p: 3, mb: 4 }}>
+          <Typography variant="h6" sx={{ mb: 2 }}>
+            Submit YouTube Video
+          </Typography>
+          <Box component="form" onSubmit={handleSubmit} display="flex" gap={2}>
+            <TextField
+              fullWidth
+              placeholder="Enter YouTube URL"
               value={url}
               onChange={(e) => setUrl(e.target.value)}
-              placeholder="Enter YouTube URL"
-              className="flex-1 px-4 py-2 bg-gray-700 rounded border border-gray-600 focus:outline-none focus:border-blue-500"
-              disabled={loading || !connections.hasCookies}
+              disabled={loading || !connections.hasYouTube}
             />
-            <button
+            <Button
               type="submit"
-              disabled={loading || !url || !connections.hasCookies}
-              className="px-6 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 rounded font-semibold"
+              disabled={loading || !url || !connections.hasYouTube}
             >
-              {loading ? "Submitting..." : "Submit"}
-            </button>
-          </form>
+              {loading ? "Submitting…" : "Submit"}
+            </Button>
+          </Box>
           {error && (
-            <div className="mt-4 p-4 bg-red-900/50 border border-red-700 rounded-lg">
-              <p className="text-red-200 text-sm mb-2">{error}</p>
-              {(error.includes("cookies") ||
-                error.includes("Sign in to confirm")) && (
-                <Link
-                  href="/setup-cookies"
-                  className="inline-block mt-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded text-sm"
-                >
-                  Update YouTube Cookies
-                </Link>
-              )}
-            </div>
+            <Alert severity="error" sx={{ mt: 2 }}>
+              {error}
+            </Alert>
           )}
-        </div>
+        </Paper>
 
-        <div className="bg-gray-800 p-6 rounded-lg">
-          <h2 className="text-xl font-semibold mb-4">Videos</h2>
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead>
-                <tr className="border-b border-gray-700">
-                  <th className="text-left py-2 px-4">Title</th>
-                  <th className="text-left py-2 px-4">Status</th>
-                  <th className="text-left py-2 px-4">Clips</th>
-                  <th className="text-left py-2 px-4">Duration</th>
-                  <th className="text-left py-2 px-4">Created</th>
-                  <th className="text-left py-2 px-4">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
+        <Paper sx={{ p: 3 }}>
+          <Stack
+            direction="row"
+            justifyContent="space-between"
+            alignItems="center"
+            sx={{ mb: 2 }}
+          >
+            <Typography variant="h6">Videos</Typography>
+            <Stack direction="row" spacing={2} alignItems="center">
+              <Typography variant="body2" color="text.secondary">
+                {selectedIds.length} selected
+              </Typography>
+              <Button
+                color="error"
+                disabled={selectedIds.length === 0 || deletingBatch}
+                onClick={handleBatchDelete}
+              >
+                {deletingBatch ? "Deleting…" : "Delete Selected"}
+              </Button>
+            </Stack>
+          </Stack>
+
+          <TableContainer>
+            <Table>
+              <TableHead>
+                <TableRow>
+                  <TableCell padding="checkbox">
+                    <Checkbox
+                      checked={
+                        videos.length > 0 &&
+                        selectedIds.length === videos.length
+                      }
+                      indeterminate={
+                        selectedIds.length > 0 &&
+                        selectedIds.length < videos.length
+                      }
+                      onChange={toggleAll}
+                    />
+                  </TableCell>
+                  <TableCell>Title</TableCell>
+                  <TableCell>Status</TableCell>
+                  <TableCell>Clips</TableCell>
+                  <TableCell>Duration</TableCell>
+                  <TableCell>Created</TableCell>
+                  <TableCell align="right">Actions</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
                 {videos.map((video) => (
-                  <tr key={video.id} className="border-b border-gray-700">
-                    <td className="py-3 px-4">{video.title}</td>
-                    <td className="py-3 px-4">
-                      <span
-                        className={`px-2 py-1 rounded text-xs ${
-                          video.status === "completed"
-                            ? "bg-green-600"
-                            : video.status === "processing"
-                              ? "bg-blue-600"
-                              : video.status === "failed"
-                                ? "bg-red-600"
-                                : "bg-gray-600"
-                        }`}
-                      >
-                        {video.status}
-                      </span>
-                    </td>
-                    <td className="py-3 px-4">{video._count.clips}</td>
-                    <td className="py-3 px-4">
-                      {Math.floor(video.durationSec / 60)}m
-                    </td>
-                    <td className="py-3 px-4">
-                      {new Date(video.createdAt).toLocaleDateString()}
-                    </td>
-                    <td className="py-3 px-4">
-                      <div className="flex gap-2">
-                        <Link
-                          href={`/videos/${video.id}`}
-                          className="text-blue-400 hover:text-blue-300"
+                  <TableRow key={video.id} hover>
+                    <TableCell padding="checkbox">
+                      <Checkbox
+                        checked={selectedIds.includes(video.id)}
+                        onChange={() => toggleOne(video.id)}
+                      />
+                    </TableCell>
+                    <TableCell>
+                      <Link href={`/videos/${video.id}`}>
+                        <Typography
+                          color="primary.main"
+                          sx={{ cursor: "pointer" }}
                         >
-                          View
-                        </Link>
+                          {video.title}
+                        </Typography>
+                      </Link>
+                    </TableCell>
+                    <TableCell>
+                      <Chip
+                        size="small"
+                        label={video.status}
+                        color={
+                          video.status === "completed"
+                            ? "success"
+                            : video.status === "processing"
+                              ? "info"
+                              : video.status === "failed"
+                                ? "error"
+                                : "default"
+                        }
+                      />
+                    </TableCell>
+                    <TableCell>{video._count.clips}</TableCell>
+                    <TableCell>{Math.floor(video.durationSec / 60)}m</TableCell>
+                    <TableCell>
+                      {new Date(video.createdAt).toLocaleDateString()}
+                    </TableCell>
+                    <TableCell align="right">
+                      <IconButton
+                        onClick={(e) => {
+                          setOpenMenuId(video.id);
+                          setMenuAnchor(e.currentTarget);
+                        }}
+                      >
+                        <MoreVertIcon />
+                      </IconButton>
+                      <Menu
+                        anchorEl={menuAnchor}
+                        open={openMenuId === video.id}
+                        onClose={() => {
+                          setOpenMenuId(null);
+                          setMenuAnchor(null);
+                        }}
+                      >
+                        <MenuItem
+                          onClick={() => {
+                            setOpenMenuId(null);
+                            setMenuAnchor(null);
+                            router.push(`/videos/${video.id}`);
+                          }}
+                        >
+                          Open
+                        </MenuItem>
                         {video.status === "processing" && (
-                          <button
-                            onClick={() => handleCancel(video.id)}
-                            className="text-red-400 hover:text-red-300"
+                          <MenuItem
+                            onClick={() => {
+                              setOpenMenuId(null);
+                              setMenuAnchor(null);
+                              handleCancel(video.id);
+                            }}
                           >
                             Cancel
-                          </button>
+                          </MenuItem>
                         )}
-                      </div>
-                    </td>
-                  </tr>
+                        <Divider />
+                        <MenuItem
+                          disabled={deletingId === video.id}
+                          onClick={() => {
+                            setOpenMenuId(null);
+                            setMenuAnchor(null);
+                            handleDelete(video.id);
+                          }}
+                          sx={{ color: "error.main" }}
+                        >
+                          {deletingId === video.id ? "Deleting…" : "Delete"}
+                        </MenuItem>
+                      </Menu>
+                    </TableCell>
+                  </TableRow>
                 ))}
-              </tbody>
-            </table>
+              </TableBody>
+            </Table>
             {videos.length === 0 && (
-              <div className="text-center py-8 text-gray-400">
+              <Box py={6} textAlign="center" color="text.secondary">
                 No videos yet. Submit a YouTube URL to get started.
-              </div>
+              </Box>
             )}
-          </div>
-        </div>
-      </div>
-    </div>
+            <TablePagination
+              component="div"
+              count={total}
+              page={page}
+              onPageChange={(_, newPage) => setPage(newPage)}
+              rowsPerPage={rowsPerPage}
+              onRowsPerPageChange={(e) => {
+                setRowsPerPage(parseInt(e.target.value, 10));
+                setPage(0);
+              }}
+              rowsPerPageOptions={[10, 25, 50, 100]}
+              labelDisplayedRows={({ page: p }) =>
+                `Page ${p + 1} of ${pageCount}`
+              }
+            />
+          </TableContainer>
+        </Paper>
+      </Container>
+    </Box>
   );
 }

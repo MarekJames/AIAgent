@@ -28,19 +28,6 @@ export async function POST(request: NextRequest) {
       )
     }
     
-    const user = await prisma.user.findUnique({
-      where: { id: session.userId },
-      select: { youtubeCookies: true }
-    })
-    
-    if (!user || !user.youtubeCookies)
-    {
-      return NextResponse.json(
-        { error: 'YouTube cookies not configured. Please upload your YouTube cookies first.' },
-        { status: 401 }
-      )
-    }
-    
     const body = await request.json()
     const { url } = body
     
@@ -92,14 +79,6 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         { error: 'Invalid YouTube URL' },
         { status: 400 }
-      )
-    }
-    
-    if (error.message.includes('YouTube cookies'))
-    {
-      return NextResponse.json(
-        { error: error.message },
-        { status: 401 }
       )
     }
     

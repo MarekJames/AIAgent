@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { requireAuth } from "@/src/lib/session";
 import { prisma } from "@/src/lib/prisma";
+import { isYouTubeConnected } from "@/src/lib/youtube-oauth";
+import { getCookieAge } from "@/src/services/cookieGenerator";
 
 export async function GET() {
   try {
@@ -17,8 +19,6 @@ export async function GET() {
       select: {
         googleAccountId: true,
         googleTokenExpiresAt: true,
-        youtubeCookies: true,
-        youtubeCookiesLastUsedAt: true,
       },
     });
     if (!user) {
@@ -30,13 +30,17 @@ export async function GET() {
       select: { updatedAt: true },
     });
 
+    const hasYouTube = await isYouTubeConnected();
+    const cookieAge = await getCookieAge(session.userId);
+
     return NextResponse.json({
       hasOAuth: !!user.googleAccountId,
       oauthExpired: user.googleTokenExpiresAt
         ? user.googleTokenExpiresAt < new Date()
         : true,
-      hasCookies: !!user.youtubeCookies,
-      cookiesLastUsedAt: user.youtubeCookiesLastUsedAt,
+      hasYouTube,
+      hasCookies: cookieAge !== null,
+      cookieAgeDays: cookieAge !== null ? Math.floor(cookieAge) : null,
       hasTikTok: !!tiktok,
       tiktokConnectedAt: tiktok?.updatedAt || null,
     });

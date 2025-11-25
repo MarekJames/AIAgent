@@ -35,6 +35,7 @@ model Video {
   transcript                  Json?
   retentionHotspotsJson       Json?
   commentTimestampHotspotsJson Json?
+  globalCropMapJson           Json?
   clips                       Clip[]
   user                        User     @relation(fields: [userId], references: [id])
   @@index([userId])

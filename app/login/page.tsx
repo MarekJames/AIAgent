@@ -27,17 +27,7 @@ export default function LoginPage() {
       
       if (data.isAuthenticated)
       {
-        const connectionsRes = await fetch('/api/me/connections')
-        const connections = await connectionsRes.json()
-        
-        if (connections.hasCookies)
-        {
-          router.push('/')
-        }
-        else
-        {
-          router.push('/setup-cookies')
-        }
+        router.push('/')
       }
     }
     catch (err) {
@@ -107,10 +97,6 @@ export default function LoginPage() {
             </li>
             <li className="flex items-start gap-2">
               <span className="text-blue-400 mt-0.5">2.</span>
-              <span>Upload your YouTube cookies for video access</span>
-            </li>
-            <li className="flex items-start gap-2">
-              <span className="text-blue-400 mt-0.5">3.</span>
               <span>Start creating short clips from YouTube videos</span>
             </li>
           </ul>

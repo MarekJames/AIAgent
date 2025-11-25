@@ -1,48 +1,6 @@
-import { TranscriptSegment, TranscriptWord } from './openai'
+import { TranscriptSegment, TranscriptWord, isSentenceBoundaryToken } from './openai'
 import { SceneChange } from './ffmpeg'
 import { Chapter } from './youtube'
-
-function isIntroChapter(title: string, detectedLanguage?: string): boolean {
-  const titleLower = title.toLowerCase().trim()
-  
-  const introKeywords: Record<string, string[]> = {
-    'en': ['intro', 'introduction', 'opening', 'welcome', 'trailer', 'credits'],
-    'es': ['intro', 'introduccion', 'introducción', 'apertura', 'inicio', 'inicio del video', 'inicio del vídeo', 'bienvenida'],
-    'pt': ['intro', 'introducao', 'introduçao', 'introdução', 'apresentacao', 'apresentação', 'abertura', 'boas-vindas'],
-    'fr': ['intro', 'introduction', 'ouverture', 'bienvenue'],
-    'de': ['intro', 'einführung', 'einleitung', 'eröffnung', 'willkommen'],
-    'it': ['intro', 'introduzione', 'apertura', 'benvenuto'],
-    'ja': ['イントロ', '紹介', 'オープニング'],
-    'ko': ['인트로', '소개', '오프닝'],
-    'zh': ['介绍', '简介', '开场'],
-    'ru': ['вступление', 'введение', 'открытие']
-  }
-  
-  let keywordsToCheck = introKeywords['en'] || []
-  
-  if (detectedLanguage && introKeywords[detectedLanguage])
-  {
-    keywordsToCheck = [...introKeywords[detectedLanguage], ...introKeywords['en']]
-  }
-  else {
-    keywordsToCheck = Object.values(introKeywords).flat()
-  }
-  
-  for (const keyword of keywordsToCheck)
-  {
-    if (titleLower.includes(keyword))
-    {
-      return true
-    }
-  }
-  
-  if (titleLower.length < 20 && (titleLower.match(/^(chapter|capítulo|part|parte|section|secção|seção|episode|episódio)\s*[0-9]+/)))
-  {
-    return false
-  }
-  
-  return false
-}
 
 export interface Segment {
   startSec: number
@@ -55,182 +13,116 @@ export interface Segment {
   chapterTitle?: string
 }
 
-function hasOverlap(seg1: Segment, seg2: Segment): boolean {
-  return !(seg1.endSec <= seg2.startSec || seg2.endSec <= seg1.startSec)
+function hasOverlap(a: Segment, b: Segment): boolean {
+  if (a.endSec <= b.startSec) { return false }
+  if (b.endSec <= a.startSec) { return false }
+  return true
 }
 
 function removeOverlaps(segments: Segment[]): Segment[] {
-  if (segments.length === 0) return []
-  
-  const sorted = [...segments].sort((a, b) => b.score - a.score)
-  const selected: Segment[] = []
-  
-  for (const segment of sorted) {
-    let overlaps = false
-    for (const existing of selected) {
-      if (hasOverlap(segment, existing)) {
-        overlaps = true
-        break
-      }
-    }
-    
-    if (!overlaps) {
-      selected.push(segment)
-    }
+  if (segments.length === 0) { return [] }
+  const sorted = [...segments].sort((x, y) => y.score - x.score)
+  const out: Segment[] = []
+  for (const s of sorted) {
+    let keep = true
+    for (const k of out) { if (hasOverlap(s, k)) { keep = false; break } }
+    if (keep) { out.push(s) }
   }
-  
-  return selected.sort((a, b) => a.startSec - b.startSec)
+  return out.sort((a, b) => a.startSec - b.startSec)
 }
 
-export function detectSegments(
-  transcript: TranscriptSegment[], 
-  sceneChanges: SceneChange[], 
-  chapters: Chapter[] = [], 
-  videoDuration: number = 0
-): Segment[] {
-  const allWords: TranscriptWord[] = []
-  
-  for (const segment of transcript) {
-    for (const word of segment.words) {
-      allWords.push(word)
-    }
+function chooseTargets(): number[] { return [60, 120] }
+
+function withinTolerance(d: number, target: number): boolean {
+  const low = target - 15
+  const high = target + 15
+  if (d < low) { return false }
+  if (d > high) { return false }
+  return true
+}
+
+function snapToBoundary(words: TranscriptWord[], startSec: number, hardEndSec: number, target: number): { endSec: number; slice: TranscriptWord[] } {
+  if (words.length === 0) { return { endSec: startSec, slice: [] } }
+  const desired = startSec + target
+  const maxEnd = Math.min(hardEndSec, startSec + target + 15)
+  const minEnd = Math.max(startSec + target - 15, startSec + 20)
+  let idx = words.findIndex(w => w.end >= desired)
+  if (idx === -1) { idx = words.length - 1 }
+  let pick = idx
+  for (let i = idx; i < words.length; i++) {
+    const w = words[i]
+    if (w.end > maxEnd) { break }
+    const tok = w.word
+    const next = words[i + 1]
+    const gap = next ? next.start - w.end : 0
+    if (isSentenceBoundaryToken(tok)) { pick = i; break }
+    if (gap >= 0.8 && w.end >= minEnd) { pick = i; break }
   }
-  
-  if (allWords.length === 0) {
-    return []
-  }
-  
-  let chaptersToAnalyze: Chapter[] = []
-  const detectedLanguage = transcript[0]?.language
-  
-  if (chapters.length > 0) {
-    const firstChapter = chapters[0]
-    const isIntro = isIntroChapter(firstChapter.title, detectedLanguage)
-    
-    if (isIntro)
-    {
-      console.log(`First chapter "${firstChapter.title}" detected as intro, analyzing remaining chapters`)
-      chaptersToAnalyze = chapters.slice(1)
+  if (words[pick].end - startSec < 20 && words[words.length - 1].end - startSec >= 20) { while (pick < words.length - 1 && words[pick].end - startSec < 20) { pick = pick + 1 } }
+  const endSec = Math.min(maxEnd, words[pick].end)
+  const slice = words.filter(w => w.end <= endSec + 1e-3)
+  return { endSec, slice }
+}
+
+function scoreBasic(words: TranscriptWord[], start: number, end: number, sceneChanges: SceneChange[]): number {
+  const dur = Math.max(0.001, end - start)
+  const speech = words.reduce((s, w) => s + Math.max(0, w.end - w.start), 0)
+  const pause = Math.max(0, dur - speech)
+  const pauseRatio = pause / dur
+  const wps = words.length / dur
+  const hook = words.filter(w => w.start - start < 3).map(w => w.word).join(' ').toLowerCase()
+  const hookHits = ['how','why','what','watch','secret','truth','mistake','biggest','here\'s','stop'].reduce((n, k) => hook.includes(k) ? n + 1 : n, 0)
+  const scenes = sceneChanges.filter(s => s.timeSec >= start && s.timeSec <= end).length
+  const pacing = Math.max(0, 1 - Math.abs(pauseRatio - 0.18))
+  const variety = scenes >= 1 && scenes <= 6 ? 0.8 : 0.5
+  const hookness = Math.min(1, 0.4 + 0.1 * hookHits + (wps > 2.2 ? 0.1 : 0))
+  const coh = end - start >= 20 ? 0.7 : 0.4
+  const base = 0.3 * hookness + 0.25 * pacing + 0.2 * variety + 0.25 * coh
+  return base
+}
+
+export function detectSegments(transcript: TranscriptSegment[], sceneChanges: SceneChange[], chapters: Chapter[] = [], videoDuration: number = 0): Segment[] {
+  const all: TranscriptWord[] = []
+  for (const s of transcript) { for (const w of s.words) { all.push(w) } }
+  if (all.length === 0) { return [] }
+  const targets = chooseTargets()
+  const limLow = Math.min(...targets) - 15
+  const limHigh = Math.max(...targets) + 15
+  const windows: Array<{ start: number; end: number; title: string }> = []
+  const stride = 45
+  const winLen = Math.min(limHigh + 10, 135)
+  const endCap = Math.max(videoDuration, all[all.length - 1].end)
+  for (let t = 0; t + limLow < endCap; t += stride) { const e = Math.min(endCap, t + winLen); windows.push({ start: t, end: e, title: 'Window' }) }
+  const candidates: Segment[] = []
+  for (const win of windows) {
+    const words = all.filter(w => w.start >= win.start && w.start < win.end)
+    if (words.length < 12) { continue }
+    const pauses: number[] = [0]
+    for (let i = 0; i < words.length - 1; i++) {
+      const gap = words[i + 1].start - words[i].end
+      if (gap >= 0.35 && gap <= 1.2) { pauses.push(i + 1) }
     }
-    else {
-      console.log(`First chapter "${firstChapter.title}" not detected as intro, analyzing all chapters`)
-      chaptersToAnalyze = chapters
-    }
-  } else {
-    const introSkip = parseInt(process.env.INTRO_SKIP_SECONDS || '180', 10)
-    console.log(`No chapters found. Using fallback: skipping first ${introSkip} seconds`)
-    chaptersToAnalyze = [{
-      title: 'Main Content',
-      startSec: introSkip,
-      endSec: videoDuration || Math.max(...allWords.map(w => w.end))
-    }]
-  }
-  
-  if (chaptersToAnalyze.length === 0) {
-    console.log('No chapters to analyze after skipping intro')
-    return []
-  }
-  
-  const allCandidates: Segment[] = []
-  
-  for (const chapter of chaptersToAnalyze) {
-    console.log(`Analyzing chapter: "${chapter.title}" (${chapter.startSec}s - ${chapter.endSec}s)`)
-    
-    const chapterWords = allWords.filter(w => 
-      w.start >= chapter.startSec && w.start < chapter.endSec
-    )
-    
-    if (chapterWords.length === 0) {
-      console.log(`  No words found in chapter "${chapter.title}"`)
-      continue
-    }
-    
-    const pauseBoundaries: number[] = []
-    
-    for (let i = 0; i < chapterWords.length - 1; i++) {
-      const gap = chapterWords[i + 1].start - chapterWords[i].end
-      
-      if (gap >= 0.35 && gap <= 0.9) {
-        pauseBoundaries.push(i + 1)
-      }
-    }
-    
-    const chapterCandidates: Segment[] = []
-    
-    for (let i = 0; i < pauseBoundaries.length; i++) {
-      const startIdx = pauseBoundaries[i]
-      
-      for (let j = i + 1; j < pauseBoundaries.length; j++) {
-        const endIdx = pauseBoundaries[j]
-        const segmentWords = chapterWords.slice(startIdx, endIdx)
-        
-        if (segmentWords.length === 0) continue
-        
-        const startSec = segmentWords[0].start
-        const endSec = segmentWords[segmentWords.length - 1].end
-        const duration = endSec - startSec
-        
-        if (duration >= 20 && duration <= 60) {
-          const speechDuration = segmentWords.reduce((sum, w) => sum + (w.end - w.start), 0)
-          
-          if (speechDuration >= 8) {
-            const text = segmentWords.map(w => w.word).join(' ')
-            const hookWords = segmentWords.filter(w => w.start - startSec < 3)
-            const hook = hookWords.map(w => w.word).join(' ').trim()
-            
-            const wordsPerSec = segmentWords.length / duration
-            const pauseDensity = (duration - speechDuration) / duration
-            const highEnergyWords = segmentWords.filter(w => 
-              w.word.length > 6 || /[!?]/.test(w.word)
-            ).length
-            
-            const sceneChangesInSegment = sceneChanges.filter(scene => 
-              scene.timeSec >= startSec && scene.timeSec <= endSec
-            ).length
-            
-            const startsNearScene = sceneChanges.some(scene =>
-              Math.abs(scene.timeSec - startSec) <= 1.0
-            )
-            
-            const endsNearScene = sceneChanges.some(scene =>
-              Math.abs(scene.timeSec - endSec) <= 1.0
-            )
-            
-            let sceneBonus = 0
-            
-            if (startsNearScene) sceneBonus += 5
-            if (endsNearScene) sceneBonus += 5
-            if (sceneChangesInSegment > 2) sceneBonus += sceneChangesInSegment * 2
-            
-            const score = wordsPerSec * 10 + pauseDensity * 5 + highEnergyWords + sceneBonus
-            
-            chapterCandidates.push({
-              startSec,
-              endSec,
-              durationSec: duration,
-              words: segmentWords,
-              text,
-              hook: hook || text.substring(0, 50),
-              score,
-              chapterTitle: chapter.title
-            })
-          }
+    pauses.push(words.length)
+    for (let i = 0; i < pauses.length - 1; i++) {
+      for (let j = i + 1; j < pauses.length; j++) {
+        const segWords = words.slice(pauses[i], pauses[j])
+        if (segWords.length < 10) { continue }
+        const s = segWords[0].start
+        const hardEnd = segWords[segWords.length - 1].end
+        for (const t of targets) {
+          const { endSec, slice } = snapToBoundary(segWords, s, hardEnd, t)
+          const d = endSec - s
+          if (!withinTolerance(d, t)) { continue }
+          const score = scoreBasic(slice, s, endSec, sceneChanges)
+          const text = slice.map(w => w.word).join(' ')
+          const hook = slice.filter(w => w.start - s < 3).map(w => w.word).join(' ').trim()
+          candidates.push({ startSec: s, endSec, durationSec: d, words: slice, text, hook: hook || text.substring(0, 60), score, chapterTitle: win.title })
         }
       }
     }
-    
-    const nonOverlappingInChapter = removeOverlaps(chapterCandidates)
-    console.log(`  Found ${nonOverlappingInChapter.length} non-overlapping segments in chapter "${chapter.title}"`)
-    allCandidates.push(...nonOverlappingInChapter)
   }
-  
-  allCandidates.sort((a, b) => b.score - a.score)
-  
-  const preferredCandidates = allCandidates.filter(c => c.durationSec >= 25 && c.durationSec <= 45)
-  
-  if (preferredCandidates.length > 0) {
-    return preferredCandidates.slice(0, 12)
-  }
-  
-  return allCandidates.slice(0, 12)
+  const filtered = candidates.filter(c => c.durationSec >= 45 && c.durationSec <= 135)
+  filtered.sort((a, b) => b.score - a.score)
+  const unique = removeOverlaps(filtered)
+  return unique.slice(0, 12)
 }

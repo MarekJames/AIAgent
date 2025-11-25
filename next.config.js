@@ -2,12 +2,18 @@
 const nextConfig = {
   experimental: {
     serverActions: {
-      bodySizeLimit: '2mb'
-    }
+      bodySizeLimit: "2mb",
+    },
+    serverComponentsExternalPackages: [
+      "ffmpeg-static",
+      "ffprobe-static",
+      "@tensorflow/tfjs-node",
+      "@vladmandic/face-api",
+    ],
   },
   eslint: {
-    ignoreDuringBuilds: true
-  }
-}
+    ignoreDuringBuilds: true,
+  },
+};
 
-module.exports = nextConfig
+module.exports = nextConfig;
